@@ -1,65 +1,62 @@
-from fastapi import FastAPI, Request, UploadFile, File
-import httpx
-import os
-import tempfile
-import shutil
-import zipfile
+from fastapi import FastAPI, Request
 import openai
+import os
 
 app = FastAPI()
-
-# 🔑 Подключение к OpenAI
 openai.api_key = os.getenv("OPENAI_API_KEY")
 
-# ✅ Корень (для проверки в браузере)
+# 🧠 Временное хранилище сессий (в RAM)
+session_threads = {}
+
+ASSISTANT_ID = "asst_rm9rPlWkpOXf3f1EuUJ7AVzt"
+
 @app.get("/")
 def root():
-    return {"status": "ok", "message": "OpenAI Archicad Proxy is running."}
+    return {"status": "ok", "message": "Assistant with memory is ready."}
 
-# ✅ Чат с ассистентом через /chat
-@app.post("/chat")
-async def proxy_chat(request: Request):
-    body = await request.json()
-    headers = {
-        "Authorization": f"Bearer {openai.api_key}",
-        "Content-Type": "application/json"
-    }
-    async with httpx.AsyncClient() as client:
-        response = await client.post(
-            "https://api.openai.com/v1/chat/completions",
-            json=body,
-            headers=headers
-        )
-        return response.json()
 
-# ✅ Загрузка ZIP архива с SDK и отправка нужных файлов в OpenAI
-@app.post("/upload-archicad-examples")
-async def upload_examples(file: UploadFile = File(...)):
-    allowed_ext = (".cpp", ".c", ".h", ".hpp", ".grc", ".rc2", ".xml", ".txt", ".module")
-    uploaded_ids = []
+@app.post("/ask")
+async def ask(request: Request):
+    data = await request.json()
+    session_id = data.get("session_id")
+    user_input = data.get("message")
 
-    with tempfile.TemporaryDirectory() as tmpdir:
-        zip_path = os.path.join(tmpdir, "sdk.zip")
-        with open(zip_path, "wb") as buffer:
-            shutil.copyfileobj(file.file, buffer)
+    if not session_id or not user_input:
+        return {"error": "session_id and message are required"}
 
-        with zipfile.ZipFile(zip_path, "r") as archive:
-            archive.extractall(tmpdir)
+    # 🧠 Получаем или создаём thread
+    thread_id = session_threads.get(session_id)
+    if not thread_id:
+        thread = openai.beta.threads.create()
+        thread_id = thread.id
+        session_threads[session_id] = thread_id
 
-        for root, _, files in os.walk(tmpdir):
-            for fname in files:
-                if fname.lower().endswith(allowed_ext):
-                    full_path = os.path.join(root, fname)
-                    try:
-                        with open(full_path, "rb") as f:
-                            result = openai.files.create(file=f, purpose="assistants")
-                            print(f"✅ Загружен: {fname} → {result.id}")
-                            uploaded_ids.append(result.id)
-                    except Exception as e:
-                        print(f"❌ Ошибка: {fname} — {e}")
+    # 📩 Отправляем сообщение от пользователя
+    openai.beta.threads.messages.create(
+        thread_id=thread_id,
+        role="user",
+        content=user_input
+    )
 
-    return {
-        "status": "ok",
-        "uploaded_file_ids": uploaded_ids,
-        "count": len(uploaded_ids)
-    }
+    # ▶️ Запускаем выполнение ассистента
+    run = openai.beta.threads.runs.create(
+        thread_id=thread_id,
+        assistant_id=ASSISTANT_ID
+    )
+
+    # ⏳ Ждём завершения run
+    while True:
+        run = openai.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
+        if run.status in ["completed", "failed", "cancelled", "expired"]:
+            break
+
+    if run.status != "completed":
+        return {"error": f"Run failed with status: {run.status}"}
+
+    # ✅ Получаем последний ответ
+    messages = openai.beta.threads.messages.list(thread_id=thread_id, order="desc")
+    for msg in messages.data:
+        if msg.role == "assistant":
+            return {"answer": msg.content[0].text.value}
+
+    return {"error": "No assistant reply found."}
