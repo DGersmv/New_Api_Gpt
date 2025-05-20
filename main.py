@@ -41,9 +41,13 @@ async def ask(request: Request):
     )
 
     # ▶️ Запускаем ассистента
+    assistant_id = data.get("assistant_id", os.getenv("ASSISTANT_ID"))
+    if not assistant_id:
+        return {"error": "assistant_id is required"}
+
     run = openai.beta.threads.runs.create(
         thread_id=thread_id,
-        assistant_id=DEFAULT_ASSISTANT_ID
+        assistant_id=assistant_id
     )
 
     # ⏳ Ожидаем завершения run
