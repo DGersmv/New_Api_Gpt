@@ -12,12 +12,6 @@ session_threads = {}
 # 🔗 Основной ассистент
 DEFAULT_ASSISTANT_ID = os.getenv("ASSISTANT_ID")
 
-@app.get("/")
-def root():
-    return {"status": "ok", "message": "Archicad Assistant server is running."}
-
-
-
 @app.post("/ask")
 async def ask(request: Request):
     data = await request.json()
@@ -28,23 +22,30 @@ async def ask(request: Request):
     if not session_id or not user_input or not assistant_id:
         return {"error": "session_id, message, and assistant_id are required"}
 
+    # 🔁 Создаём thread при первом обращении
     thread_id = session_threads.get(session_id)
     if not thread_id:
         thread = openai.beta.threads.create()
         thread_id = thread.id
         session_threads[session_id] = thread_id
 
+    # ➕ Отправляем сообщение
     openai.beta.threads.messages.create(
         thread_id=thread_id,
         role="user",
         content=user_input
     )
 
-    run = openai.beta.threads.runs.create(
-        thread_id=thread_id,
-        assistant_id=assistant_id
-    )
+    # ▶️ Запускаем ассистента
+    try:
+        run = openai.beta.threads.runs.create(
+            thread_id=thread_id,
+            assistant_id=assistant_id
+        )
+    except Exception as e:
+        return {"error": f"Failed to start assistant: {str(e)}"}
 
+    # ⏳ Ожидаем завершения
     while True:
         run = openai.beta.threads.runs.retrieve(thread_id=thread_id, run_id=run.id)
         if run.status in ["completed", "failed", "cancelled", "expired"]:
@@ -54,12 +55,18 @@ async def ask(request: Request):
     if run.status != "completed":
         return {"error": f"Run failed: {run.status}"}
 
-    messages = openai.beta.threads.messages.list(thread_id=thread_id, order="desc")
+    # 📤 Ответ
+    try:
+        messages = openai.beta.threads.messages.list(thread_id=thread_id, order="desc")
+    except Exception as e:
+        return {"error": f"Failed to retrieve messages: {str(e)}"}
+
     for msg in messages.data:
         if msg.role == "assistant":
             return {"answer": msg.content[0].text.value}
 
     return {"error": "No assistant response found."}
+
 
 @app.post("/upload-to-vectorstore")
 async def upload_to_vectorstore(
