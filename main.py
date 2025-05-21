@@ -53,7 +53,9 @@ async def ask(request: Request):
         await asyncio.sleep(1)
 
     if run.status != "completed":
-        return {"error": f"Run failed: {run.status}"}
+        error_message = getattr(run, "last_error", {}).get("message", "unknown reason")
+        return {"error": f"Run failed: {run.status} - {error_message}"}
+
 
     # 📤 Ответ
     try:
